@@ -6,24 +6,8 @@ package dsl
 <code>
 simpleBuild {
 
-    machine = "hi-speed"
-    docker = "java:1.9"
-
-    env = [
-        FOO : 42,
-        BAR : "YASS"
-    ]
-
-    git_repo = "https://github.com/cloudbeers/PR-demo"
-
-    before_script = "echo before"
-    script = 'echo after $FOO'
-    after_script = 'echo done now'
-
-    notifications = [
-        email : "mneale@cloudbees.com"
-    ]
-
+    enviroment = "DEV"
+    version = ""
 }
 </code>
 
@@ -41,58 +25,18 @@ def call(body) {
     /** Run the build scripts */
 
     try {
-        if (config.docker_image != null) {
-            runViaDocker(config)
-        } else {
             runViaLabel(config)
-        }
-    } catch (Exception rethrow) {
+    }
+    catch (Exception rethrow) {
         failureDetail = failureDetail(rethrow)
-        sendMail(config, "FAILURE: Pipeline '${env.JOB_NAME}' (${env.BUILD_NUMBER}) failed!",
-                "Your job failed, please review it ${env.BUILD_URL}.\n\n${failureDetail}")
         throw rethrow
     }
-
-    /** conditionally notify - maybe wih a catch */
-    sendMail(config, "Pipeline '${env.JOB_NAME}' (${env.BUILD_NUMBER}) succeeded.",
-            "Be happy. Pipeline '${env.JOB_NAME}' (${env.BUILD_NUMBER}) succeeded.")
-
-
 }
-
-def sendMail(config, mailSubject, message) {
-    /*
-     * We have to build a primitive list up so we can use simple iteration
-     * so that things can be serialized as per continuation passing style
-     */
-    emailList = []
-    if (config.notifications != null) {
-        for ( e in config.notifications ) {
-            if (e.getKey() == "email") {
-                emailList.add(e.getValue());
-            }
-        }
-    }
-
-    for (i = 0; i < emailList.size(); i++) {
-        mail body: message, subject: mailSubject, to: emailList[i]
-    }
-}
-
 
 /** Execute the scripts on the appropriate label node */
 def runViaLabel(config) {
-    node(config.machine) {runScripts(config)}
+    runScripts(config)
 }
-
-def runViaDocker(config) {
-    node(config.machine) {
-        docker.image(config.docker_image).inside {
-            runScripts(config)
-        }
-    }
-}
-
 
 /** Run the before/script combination */
 def runScripts(config) {
@@ -102,24 +46,117 @@ def runScripts(config) {
     }
     withEnv(envList) {
 
-        /* checkout the codes */
-        if (config.git_repo == null) {
-            checkout scm
-        } else {
-            git config.git_repo
-        }
-
-        /* run the basic build steps */
-        if (config.before_script != null) {
-            sh config.before_script
-        }
-        sh config.script
-        if (config.after_script != null) {
-            sh config.after_script
-        }
-
-
+       if(config.enviroment == "DEV")
+       {
+       		deployToDev(config)
+       }
+       else if (config.environment == "QA")
+       {
+       		deployToQA(config)
+       }
+       else if (config.environment == "STAGING")
+       {
+       	    deployToStaging(config)
+       }
+       else if (config.environment == "PROD")
+       {
+       		deployToProd(config)
+       }
     }
+}
+
+/** Deploy to dev **/
+def deployToDev(config)
+{
+	node()
+	{
+		echo "Deploying to Dev"
+		unstash 'war'
+		//undeploy previous app 
+		sh 'rm -rf /Users/cjp-docker-compose/data/environments/dev/*.war'
+		sleep 5
+		//deploy app
+		sh 'cp target/petclinic.war /Users/cjp-docker-compose/data/environments/dev'
+		sleep 5 //wait for initialization
+		echo "Deployed to Dev"
+	}
+}
+
+/** Deploy to QA **/
+def deployToQA(config)
+{
+	stage "QA Approval"
+	timeout(time: 10, unit: 'MINUTES')
+	{
+	   try
+	   { 
+	      input message: 'Deploy to QA?'
+	   } 
+	   catch(Exception e)
+	   {
+	      echo "No input provided, resuming build"
+	   } 
+	}
+
+	node()
+	{
+		echo "Deploying to QA"
+		sh 'rm -rf /Users/cjp-docker-compose/data/environments/qa/*.war'
+		sleep 5
+		sh 'cp target/petclinic.war /Users/cjp-docker-compose/data/environments/qa'
+		sleep 5
+		echo "Deployed to QA"
+	}
+}
+
+/** Deploy to Staging **/
+def deployToStaging(config)
+{
+	checkpoint "Deployed to QA"
+	
+	stage 'Staging Deploy'
+	timeout(time: 60, unit: 'SECONDS')
+	{
+	   try
+	   {
+	    input message: "Deploy to Staging?"
+	   } 
+	   catch(Exception e)
+	   {
+	      echo "No input provided, resuming build"
+	   } 
+	}
+	
+	node ()
+	{	
+		echo "Deploying to Staging"
+		sh 'rm -rf /Users/cjp-docker-compose/data/environments/staging/*.war'
+		sleep 5
+		sh 'cp target/petclinic.war /Users/cjp-docker-compose/data/environments/staging'
+		sleep 5
+		echo "Deployed to Staging"
+	}
+}
+
+/** Deploy to Prod **/
+def deployToProd(config)
+{
+	checkpoint "Deployed to Staging"
+	stage 'Prod Deploy'
+	timeout(time: 60, unit: 'SECONDS')
+	{
+	   input message: "Deploy to Prod?"
+	}
+
+	node()
+	{		
+		echo "Deploying to Prod"
+		sh 'rm -rf /Users/cjp-docker-compose/data/environments/prod/*.war'
+		sleep 5
+		sh 'cp target/petclinic.war /Users/cjp-docker-compose/data/environments/prod'
+		sleep 5
+		echo "Deployed to Prod"
+	}
 }
 
 /**
